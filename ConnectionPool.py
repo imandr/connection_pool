@@ -1,3 +1,6 @@
+from pythreader import synchronized, TimerThread, Primitive
+import time
+
 class ConnectionContext(object):
 
     def __init__(self, pool, connection):
@@ -8,11 +11,7 @@ class ConnectionContext(object):
         return self.Connection
         
     def __exit__(self, exc_type, exc_value, traceback):
-        if not self.Connection.closed:
-            if exc_type is not None:
-                self.Connection.close()
-            else:
-                self.Pool.addConnection(self.Connection)
+        self.Pool.returnConnection(self.Connection)
         
 class ConnectorBase(object):
 
@@ -21,15 +20,23 @@ class ConnectorBase(object):
         
     def probe(self, connection):
         return True
+        
+    def connectionIsClosed(self, c):
+        raise NotImplementedError
+        
 
-class PostgresConnector(ConnectorBase):
+class PsycopgConnector(ConnectorBase):
 
     def __init__(self, connstr):
         ConnectorBase.__init__(self)
         self.Connstr = connstr
         
     def connect(self):
+        import psycopg2
         return psycopg2.connect(self.Connstr)
+        
+    def connectionIsClosed(self, conn):
+        return conn.closed
         
     def probe(self, conn):
         try:
@@ -42,17 +49,23 @@ class PostgresConnector(ConnectorBase):
 
 class ConnectionPool(Primitive):
 
-    def __init__(self, connector, idle_timeout = 60):
+    def __init__(self, postgres=None, connector=None, idle_timeout = 60):
+        Primitive.__init__(self)
         self.IdleTimeout = idle_timeout
-        self.Connector = connector
-        self.Connections = []       # [(t, db_connection),]
+        if connector is not None:
+            self.Connector = connector
+        elif postgres is not None:
+            self.Connector = PsycopgConnector(postgres)
+        self.IdleConnections = []           # available, [(t, db_connection),]
+        self.AllConnections = {}        # id(connection) -> connection
+        self.CleanThread = None
         
     @synchronized
     def connect(self):
-        self._cleanUp()
         use_connection = None
-        while self.Connections:
-            c = self.Connections.pop()
+        #print "connect(): Connections=", self.IdleConnections
+        while self.IdleConnections:
+            t, c = self.IdleConnections.pop()
             if self.Connector.probe(c):
                 use_connection = c
                 break
@@ -60,25 +73,44 @@ class ConnectionPool(Primitive):
                 c.close()
         if use_connection is None:
             use_connection = self.Connector.connect()
-        return self.ConnectionContext(self, use_connection)
+            self.AllConnections[id(use_connection)] = use_connection
+        return ConnectionContext(self, use_connection)
         
     @synchronized
-    def addConnection(self, c):
-        self.Connections.append((time.time(), c))
-        
+    def returnConnection(self, c):
+        if not self.Connector.connectionIsClosed(c):
+            self.IdleConnections.append((time.time(), c))
+            #print "return: Connections=", self.IdleConnections
+        if self.CleanThread is None:
+            self.CleanThread = TimerThread(self._cleanUp, self.IdleTimeout/2)
+            self.CleanThread.start()
+            
+    @synchronized
     def _cleanUp(self):
         now = time.time()
         
         new_connections = []
-        for t, c in self.Connections:
+        for t, c in self.IdleConnections:
             if t < now - self.IdleTimeout:
+                #print "closing idle connection", c
+                del self.AllConnections[id(c)]
                 c.close()
             else:
-                new_connections.append(c)
-        self.Connections = new_connections
+                new_connections.append((t, c))
+        self.IdleConnections = new_connections
         
+    @synchronized
+    def closeAll(self):
+        for c in self.AllConnections.values():
+            c.close()
+        self.AllConnections = {}
+        self.IdleConnections = []
         
-            
-            
-                
+    def __del__(self):
+        print "pool.__del__"
+        with self:
+            self.closeAll()
+            if self.CleanThread is not None:
+                self.CleanThread.stop()
+                self.CleanThread = None
         
