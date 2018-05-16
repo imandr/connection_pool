@@ -120,14 +120,19 @@ class ConnectionPool(Primitive):
         
     @synchronized
     def returnConnection(self, c):
-        if not self.Connector.connectionIsClosed(c) \
-                and not c in [x for t, x in self.IdleConnections]:
+        
+        if self.Connector.connectionIsClosed(c):
+            try:    del self.AllConnections[id(c)]
+            except KeyError:    pass
+            return
+            
+        if not c in self.IdleConnections:
             self.IdleConnections.append(c)
             self.AllConnections[id(c)] = (c, time.time())
             #print "return: Connections=", self.IdleConnections
-        if self.CleanThread is None:
-            self.CleanThread = TimerThread(self._cleanUp, self.IdleTimeout/2)
-            self.CleanThread.start()
+            if self.CleanThread is None:
+                self.CleanThread = TimerThread(self._cleanUp, self.IdleTimeout/2)
+                self.CleanThread.start()
             
     @synchronized
     def _cleanUp(self):
