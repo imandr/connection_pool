@@ -191,7 +191,7 @@ class ConnectionPool(object):
     #
     
     def __init__(self, postgres=None, connector=None, idle_timeout = 60):
-        self.Pool = _ConnectionPool(postgres=postgres, connector=connector, idle_timeout = idle_timeout)
+        self.Pool = _ConnectionPool(postgres=postgres, connector=connector, idle_timeout = idle_timeout)    # the real pool
         self.CleanThread = CleanUpThread(self.Pool, max(1.0, float(idle_timeout)/2.0))
         self.CleanThread.start()
 
@@ -199,7 +199,7 @@ class ConnectionPool(object):
         # make sure to stop the clean up thread
         self.CleanerThread.stop()
 
-    # delegate all functions to the manager
+    # delegate all functions to the real pool
     def __getattr__(self, name):
         return getattr(self.Pool, name)
         
