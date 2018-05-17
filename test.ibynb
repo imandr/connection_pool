@@ -1,0 +1,143 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [],
+   "source": [
+    "from ConnectionPool import ConnectionPool\n",
+    "pool = ConnectionPool(postgres=\"host=localhost port=5433 dbname=ivm user=ivm password=ivm123\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "WrappedConnection(<connection object at 0x106cce1a0; dsn: 'user=ivm host=localhost password=xxx port=5433 dbname=ivm', closed: 0>)\n"
+     ]
+    }
+   ],
+   "source": [
+    "conn = pool.connect()\n",
+    "print conn"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "WrappedConnection(<connection object at 0x106cce1a0; dsn: 'user=ivm host=localhost password=xxx port=5433 dbname=ivm', closed: 0>)\n"
+     ]
+    }
+   ],
+   "source": [
+    "conn = None\n",
+    "conn = pool.connect()\n",
+    "print conn"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "conn = None\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "<connection object at 0x106cce1a0; dsn: 'user=ivm host=localhost password=xxx port=5433 dbname=ivm', closed: 0>\n",
+      "<connection object at 0x106cce2f0; dsn: 'user=ivm host=localhost password=xxx port=5433 dbname=ivm', closed: 0>\n",
+      "<connection object at 0x106cce440; dsn: 'user=ivm host=localhost password=xxx port=5433 dbname=ivm', closed: 0>\n"
+     ]
+    }
+   ],
+   "source": [
+    "with pool.connect() as conn1:\n",
+    "    print conn1\n",
+    "    with pool.connect() as conn2:\n",
+    "        print conn2\n",
+    "        with pool.connect() as conn3:\n",
+    "            print conn3"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "metadata": {
+    "collapsed": false
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "WrappedConnection(<connection object at 0x106cce1a0; dsn: 'user=ivm host=localhost password=xxx port=5433 dbname=ivm', closed: 0>) WrappedConnection(<connection object at 0x106cce1a0; dsn: 'user=ivm host=localhost password=xxx port=5433 dbname=ivm', closed: 0>)\n"
+     ]
+    }
+   ],
+   "source": [
+    "print pool.connect(), pool.connect()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 2",
+   "language": "python",
+   "name": "python2"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 2
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython2",
+   "version": "2.7.12"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 0
+}

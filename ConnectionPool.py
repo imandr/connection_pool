@@ -1,5 +1,5 @@
-from pythreader import synchronized, TimerThread, Primitive
 import time
+from threading import RLock, Thread
 
 class _WrappedConnection(object):
     #
@@ -24,12 +24,16 @@ class _WrappedConnection(object):
     def __init__(self, pool, connection):
         self.Connection = connection
         self.Pool = pool
+        
+    def __str__(self):
+        return "WrappedConnection(%s)" % (self.Connection,)
 
     def _done(self):
-        if self.Connection is not None:
+        if self.Pool is not None:
             self.Pool.returnConnection(self.Connection)
-            self.Connection = None
             self.Pool = None
+        if self.Connection is not None:
+            self.Connection = None
     
     #
     # If used via the context manager, unwrap the connection
@@ -45,7 +49,13 @@ class _WrappedConnection(object):
     #
     def __del__(self):
         self._done()
-            
+    
+    def close(self):
+        if self.Connection is not None:
+            self.Connection.close()
+            self.Connection = None
+            self.Pool = None
+    
     #
     # act as a database connection object
     #
@@ -80,87 +90,116 @@ class PsycopgConnector(ConnectorBase):
     def probe(self, conn):
         try:
             c = conn.cursor()
-            c.execute("select 1")
-            return c.fetchone()[0] == 1
+            c.execute("rollback; select 1")
+            alive = c.fetchone()[0] == 1
+            c.execute("rollback")
+            return alive
         except:
             return False
-        
+            
+class MySQLConnector(ConnectorBase):
+    def __init__(self, connstr):
+        raise NotImplementedError
 
-class ConnectionPool(Primitive):
+class _ConnectionPool(object):      
+    #
+    # actual pool implementation, without the reference to the CleanUpThread to avoid circular reference
+    # between the pool and the clean-up thread
+    #
 
-    def __init__(self, postgres=None, connector=None, idle_timeout = 60):
-        Primitive.__init__(self)
+    def __init__(self, postgres=None, mysql=None, connector=None, idle_timeout = 60):
         self.IdleTimeout = idle_timeout
         if connector is not None:
             self.Connector = connector
         elif postgres is not None:
             self.Connector = PsycopgConnector(postgres)
+        elif mysql is not None:
+            self.Connector = MySQLConnector(mysql)
         else:
             raise ValueError("Connector must be provided")
         self.IdleConnections = []           # available, [db_connection, ...]
         self.AllConnections = {}            # id(connection) -> (connection, t)
-        self.CleanThread = None
+        self.Lock = RLock()
         
-    @synchronized
     def connect(self):
-        use_connection = None
-        #print "connect(): Connections=", self.IdleConnections
-        while self.IdleConnections:
-            c = self.IdleConnections.pop()
-            if self.Connector.probe(c):
-                use_connection = c
-                break
+        with self.Lock:
+            use_connection = None
+            #print "connect(): Connections=", self.IdleConnections
+            while self.IdleConnections:
+                c = self.IdleConnections.pop()
+                if self.Connector.probe(c):
+                    use_connection = c
+                    break
+                else:
+                    c.close()
+                    del self.AllConnections[id(c)]
             else:
-                c.close()
-                del self.AllConnections[id(c)]
-        else:
-            use_connection = self.Connector.connect()
-            self.AllConnections[id(use_connection)] = (use_connection, time.time())
-        return _WrappedConnection(self, use_connection)
+                use_connection = self.Connector.connect()
+                self.AllConnections[id(use_connection)] = (use_connection, time.time())
+            return _WrappedConnection(self, use_connection)
         
-    @synchronized
     def returnConnection(self, c):
-        
-        if self.Connector.connectionIsClosed(c):
-            try:    del self.AllConnections[id(c)]
-            except KeyError:    pass
-            return
+        with self.Lock:
+            if self.Connector.connectionIsClosed(c):
+                try:    del self.AllConnections[id(c)]
+                except KeyError:    pass
+                return
             
-        if not c in self.IdleConnections:
-            self.IdleConnections.append(c)
-            self.AllConnections[id(c)] = (c, time.time())
-            #print "return: Connections=", self.IdleConnections
-            if self.CleanThread is None:
-                self.CleanThread = TimerThread(self._cleanUp, self.IdleTimeout/2)
-                self.CleanThread.start()
+            if not c in self.IdleConnections:
+                self.IdleConnections.append(c)
+                self.AllConnections[id(c)] = (c, time.time())
             
-    @synchronized
     def _cleanUp(self):
-        now = time.time()
+        with self.Lock:
+            now = time.time()
         
-        new_connections = []
-        for c in self.IdleConnections:
-            _, t = self.AllConnections[id(c)]
-            if t < now - self.IdleTimeout:
-                #print "closing idle connection", c
-                del self.AllConnections[id(c)]
-                c.close()
-            else:
-                new_connections.append(c)
-        self.IdleConnections = new_connections
+            new_connections = []
+            for c in self.IdleConnections:
+                _, t = self.AllConnections[id(c)]
+                if t < now - self.IdleTimeout:
+                    #print "closing idle connection", c
+                    del self.AllConnections[id(c)]
+                    c.close()
+                else:
+                    new_connections.append(c)
+            self.IdleConnections = new_connections
         
-    @synchronized
     def closeAll(self):
-        for c, t in self.AllConnections.values():
-            c.close()
-        self.AllConnections = {}
-        self.IdleConnections = []
+        with self.Lock:
+            for c, t in self.AllConnections.values():
+                c.close()
+            self.AllConnections = {}
+            self.IdleConnections = []
+            
+class CleanUpThread(Thread):    
+    
+    def __init__(self, pool, interval):
+        Thread.__init__(self)
+        self.Interval = interval
+        self.Pool = pool
         
+    def run(self):
+        while True:
+              time.sleep(self.Interval)
+              self.Pool._cleanUp()
+              
+class ConnectionPool(object):
+
+    #
+    # This class is needed only to break circular dependency between the CleanUpThread and the real Pool
+    # The CleanUpThread will be owned by this Pool object, while pointing to the real Pool
+    #
+    
+    def __init__(self, postgres=None, connector=None, idle_timeout = 60):
+        self.Pool = _ConnectionPool(postgres=postgres, connector=connector, idle_timeout = idle_timeout)
+        self.CleanThread = CleanUpThread(self.Pool, max(1.0, float(idle_timeout)/2.0))
+        self.CleanThread.start()
+
     def __del__(self):
-        #print "pool.__del__"
-        with self:
-            self.closeAll()
-            if self.CleanThread is not None:
-                self.CleanThread.stop()
-                self.CleanThread = None
+        # make sure to stop the clean up thread
+        self.CleanerThread.stop()
+
+    # delegate all functions to the manager
+    def __getattr__(self, name):
+        return getattr(self.Pool, name)
         
