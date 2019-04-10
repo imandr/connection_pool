@@ -27,6 +27,8 @@ class _WrappedConnection(object):
         
     def __str__(self):
         return "WrappedConnection(%s)" % (self.Connection,)
+        
+    __repr__ = __str__
 
     def _done(self):
         if self.Pool is not None:
@@ -49,12 +51,15 @@ class _WrappedConnection(object):
     #
     def __del__(self):
         self._done()
-    
+        
+    #
+    # If closed explicitly, close it and do not return to the pool
+    #
     def close(self):
         if self.Connection is not None:
             self.Connection.close()
             self.Connection = None
-            self.Pool = None
+        self.Pool = None
     
     #
     # act as a database connection object
@@ -107,8 +112,7 @@ class _ConnectionPool(object):
     # between the pool and the clean-up thread
     #
 
-    def __init__(self, postgres=None, mysql=None, connector=None, idle_timeout = 60):
-        self.IdleTimeout = idle_timeout
+    def __init__(self, postgres=None, mysql=None, connector=None):
         if connector is not None:
             self.Connector = connector
         elif postgres is not None:
@@ -149,14 +153,13 @@ class _ConnectionPool(object):
                 self.IdleConnections.append(c)
                 self.AllConnections[id(c)] = (c, time.time())
             
-    def _cleanUp(self):
+    def _cleanUp(self, idle_timeout):
         with self.Lock:
             now = time.time()
-        
             new_connections = []
             for c in self.IdleConnections:
                 _, t = self.AllConnections[id(c)]
-                if t < now - self.IdleTimeout:
+                if t < now - idle_timeout:
                     #print "closing idle connection", c
                     del self.AllConnections[id(c)]
                     c.close()
@@ -173,15 +176,20 @@ class _ConnectionPool(object):
             
 class CleanUpThread(Thread):    
     
-    def __init__(self, pool, interval):
+    def __init__(self, pool, timeout):
         Thread.__init__(self)
-        self.Interval = interval
+        self.Timeout = timeout
         self.Pool = pool
+        self.Stop = False
         
     def run(self):
-        while True:
-              time.sleep(self.Interval)
-              self.Pool._cleanUp()
+        while not self.Stop:
+              time.sleep(float(self.Timeout)/2)
+              self.Pool._cleanUp(self.Timeout)
+    
+    def stop(self):
+        self.Stop = True
+    
               
 class ConnectionPool(object):
 
@@ -190,14 +198,15 @@ class ConnectionPool(object):
     # The CleanUpThread will be owned by this Pool object, while pointing to the real Pool
     #
     
-    def __init__(self, postgres=None, connector=None, idle_timeout = 60):
-        self.Pool = _ConnectionPool(postgres=postgres, connector=connector, idle_timeout = idle_timeout)    # the real pool
-        self.CleanThread = CleanUpThread(self.Pool, max(1.0, float(idle_timeout)/2.0))
+    def __init__(self, idle_timeout = 60, *params, **args):
+        self.Pool = _ConnectionPool(*params, **args)    # the real pool
+        self.CleanThread = CleanUpThread(self.Pool, idle_timeout)
         self.CleanThread.start()
 
     def __del__(self):
         # make sure to stop the clean up thread
-        self.CleanerThread.stop()
+        self.CleanThread.stop()
+        self.CleanThread = None
 
     # delegate all functions to the real pool
     def __getattr__(self, name):
